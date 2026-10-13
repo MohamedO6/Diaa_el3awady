@@ -1,5 +1,5 @@
 # app.py  →  pip install streamlit  →  streamlit run app.py
-import ast, difflib, html, json, operator, random, re, time
+import ast, difflib, html, json, operator, random, re, secrets, threading, time
 from datetime import datetime
 from pathlib import Path
 
@@ -18,15 +18,34 @@ THEMES = {
                          crt=".stApp::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:99;"
                              "background:repeating-linear-gradient(0deg,rgba(0,0,0,.28) 0,rgba(0,0,0,.28) 1px,transparent 1px,transparent 3px)}"),
 }
+DIFFS = {"Easy": dict(key="Easy", name="EASY", lives=5, fire=.6, spd=.85, hp=.8),
+         "Normal": dict(key="Normal", name="NORMAL", lives=3, fire=1, spd=1, hp=1),
+         "Hard": dict(key="Hard", name="HARD", lives=2, fire=1.5, spd=1.2, hp=1.3)}
+
+ss = st.session_state
+qp_name = st.query_params.get("p", "")
+ss.setdefault("player", re.sub(r"[^\w\s\-.]", "", qp_name, flags=re.UNICODE).strip()[:16] or None)
+
 with st.sidebar:
     st.header("🛸 Mission Control")
     theme = THEMES[st.selectbox("🎨 Theme", list(THEMES))]
-    diff_name = st.selectbox("🎚️ الصعوبة", ["Easy", "Normal", "Hard"], index=1)
+    diff_name = st.selectbox("🎚️ الصعوبة", list(DIFFS), index=1,
+                             format_func=lambda d: {"Easy": "Easy 😊", "Normal": "Normal 😎", "Hard": "Hard 🔥"}[d])
+    st.divider()
+    if ss.player:
+        st.markdown(f"👤 **{html.escape(ss.player)}**")
+        if st.button("✏️ غيّر الاسم", use_container_width=True):
+            ss.player = None
+            st.query_params.clear()
+            st.rerun()
+    side_slot = st.container()   # بيتملي في آخر السكريبت عشان يبقى محدّث
 
 CSS = """
 <style>
-:root{--acc:ACC;--glow:GLOW;--txt:TXT;--term:TERM}
-.stApp{background:radial-gradient(ellipse at bottom,BG1 0%,BG2 100%);color:var(--txt)}
+:root{--acc:%ACC%;--glow:%GLOW%;--txt:%TXT%;--term:%TERM%}
+.stApp{background:radial-gradient(ellipse at bottom,%BG1% 0%,%BG2% 100%);color:var(--txt)}
+[data-testid=stSidebar]{background:rgba(5,7,13,.72);backdrop-filter:blur(10px);border-right:1px solid rgba(255,255,255,.08)}
+.block-container{padding-top:1.4rem;max-width:1250px}
 .stars,.stars2{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;
  background-repeat:repeat;animation:move 60s linear infinite}
 .stars{background-image:radial-gradient(2px 2px at 20px 30px,#fff,transparent),
@@ -37,22 +56,53 @@ CSS = """
 @keyframes move{from{background-position:0 0}to{background-position:0 1000px}}
 @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
 @keyframes pulse{0%,100%{text-shadow:0 0 12px var(--glow),0 0 30px var(--glow)}50%{text-shadow:0 0 22px var(--acc),0 0 50px var(--glow)}}
+@keyframes pop{0%{transform:scale(.8);opacity:0}100%{transform:scale(1);opacity:1}}
 .title{font-size:46px;font-weight:900;text-align:center;color:var(--acc);animation:pulse 3s ease-in-out infinite;letter-spacing:2px}
+.subtitle{text-align:center;opacity:.75;margin:-4px 0 14px;font-size:15px}
 .chk{font-size:40px;display:inline-block;animation:float 2s ease-in-out infinite}
+.glass{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:16px;
+ backdrop-filter:blur(8px);box-shadow:0 6px 24px rgba(0,0,0,.35)}
 .term{background:#05070dcc;border:2px solid var(--acc);border-radius:12px;padding:14px;
  font-family:monospace;color:var(--term);white-space:pre-wrap;max-height:430px;overflow:auto;
  box-shadow:0 0 18px var(--glow);direction:ltr;text-align:left}
 .good{border-left:6px solid #4caf50;background:#10301a;padding:10px;border-radius:8px}
 .bad{border-left:6px solid #ff3d3d;background:#3a1010;padding:10px;border-radius:8px}
 .warn{background:#3a2a05;border:1px solid #ffb300;padding:10px;border-radius:8px;color:#ffe9b0}
-div.stButton>button{background:linear-gradient(var(--acc),var(--glow));color:#111;font-weight:800;border:0;border-radius:10px;transition:.15s}
-div.stButton>button:hover{transform:translateY(-2px) scale(1.03);box-shadow:0 0 14px var(--glow)}
-.stTabs [data-baseweb=tab]{font-weight:700}
-CRT
+div.stButton>button,div.stFormSubmitButton>button{background:linear-gradient(var(--acc),var(--glow));color:#111;font-weight:800;border:0;border-radius:10px;transition:.15s}
+div.stButton>button:hover,div.stFormSubmitButton>button:hover{transform:translateY(-2px) scale(1.03);box-shadow:0 0 14px var(--glow);color:#000}
+.stTextInput input{border-radius:10px}
+.stTabs [data-baseweb=tab-list]{gap:8px}
+.stTabs [data-baseweb=tab]{font-weight:700;background:rgba(255,255,255,.05);border-radius:10px 10px 0 0;padding:8px 16px}
+.stTabs [aria-selected=true]{background:rgba(255,255,255,.14);color:var(--acc)}
+[data-testid=stMetric]{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:10px 14px}
+/* name card */
+.namecard{text-align:center;padding:26px 18px;animation:pop .4s ease}
+.namecard h2{color:var(--acc);margin:0 0 6px}
+/* result card */
+.res{border-radius:14px;padding:14px 18px;margin:10px 0;animation:pop .4s ease;border:1px solid rgba(255,255,255,.15);
+ background:linear-gradient(135deg,rgba(255,217,59,.15),rgba(255,152,0,.08))}
+.res.nb{border-color:var(--acc);box-shadow:0 0 22px var(--glow)}
+.res b{color:var(--acc)}
+/* podium */
+.podium{display:flex;justify-content:center;align-items:flex-end;gap:12px;margin:18px 0 12px;flex-wrap:wrap}
+.pod{flex:1;min-width:130px;max-width:230px;text-align:center;padding:14px 10px;border-radius:16px 16px 6px 6px;
+ border:1px solid rgba(255,255,255,.18);animation:pop .5s ease;backdrop-filter:blur(6px)}
+.pod .medal{font-size:38px}.pod .pn{font-weight:800;font-size:18px;word-break:break-word}
+.pod .ps{font-size:26px;font-weight:900;font-family:monospace}.pod .pm{font-size:12px;opacity:.75}
+.pod.gold{min-height:200px;background:linear-gradient(#ffd93b55,#ffd93b11);box-shadow:0 0 24px #ffd93b66}
+.pod.silver{min-height:165px;background:linear-gradient(#cfd8dc55,#cfd8dc11)}
+.pod.bronze{min-height:140px;background:linear-gradient(#cd7f3255,#cd7f3211)}
+.pod.you{outline:2px solid var(--acc)}
+.lb{width:100%;border-collapse:collapse;margin-top:8px;direction:ltr}
+.lb th{font-size:12px;text-transform:uppercase;letter-spacing:1px;opacity:.65;padding:8px;text-align:left}
+.lb td{padding:9px 8px;border-top:1px solid rgba(255,255,255,.08)}
+.lb tr.you td{background:rgba(255,217,59,.16);font-weight:800}
+.lb td.sc{font-family:monospace;font-weight:800;color:var(--acc)}
+%CRT%
 </style><div class="stars"></div><div class="stars2"></div>
 """
-for k, v in {"ACC": theme["acc"], "GLOW": theme["glow"], "TXT": theme["txt"], "TERM": theme["term"],
-             "BG1": theme["bg1"], "BG2": theme["bg2"], "CRT": theme["crt"]}.items():
+for k, v in {"%ACC%": theme["acc"], "%GLOW%": theme["glow"], "%TXT%": theme["txt"], "%TERM%": theme["term"],
+             "%BG1%": theme["bg1"], "%BG2%": theme["bg2"], "%CRT%": theme["crt"]}.items():
     CSS = CSS.replace(k, v)
 st.markdown(CSS, unsafe_allow_html=True)
 
@@ -161,9 +211,10 @@ def check_food(q):
 COMMANDS = ["-help", "info", "shiblanga", "diaa el3awady", "diaa-wisdom", "no2ta", "nizam-el-tayebat",
             "tayebat-check", "tayebat-menu", "tayebat-meal", "hungry", "thirsty", "chicken", "rocket", "matrix",
             "weather", "fortune", "system-load", "disk-space", "cowsay", "greet", "disclaimer", "clear",
-            "history", "calc", "joke", "date", "neofetch", "sudo", "konami"]
+            "history", "calc", "joke", "date", "neofetch", "sudo", "konami", "whoami"]
 HELP = """-help              : القائمة دي
 info / neofetch    : معلومات النظام
+whoami             : انت مين؟
 shiblanga          : ASCII art
 diaa el3awady      : dot-art
 diaa-wisdom        : حكمة (باروديا)
@@ -202,9 +253,10 @@ def safe_calc(expr):
 def run_command(cmd, anim):
     low = cmd.lower().strip()
     if low in ("-help", "--help", "help"): return HELP
-    if low == "info": return "[Shiblanga OS v4.0]\nStatus: Active\nKernel: Streamlit Simulated Shell\nTheme: Chicken Invaders Edition 🐔"
+    if low == "info": return "[Shiblanga OS v5.0]\nStatus: Active\nKernel: Streamlit Simulated Shell\nTheme: Chicken Invaders Edition 🐔"
+    if low == "whoami": return f"👤 {ss.get('player') or 'guest'} @ shiblanga-os"
     if low == "neofetch":
-        return (f"   ,~.      shiblanga@local\n  (o o)>    ---------------\n  ( V )     OS: Shiblanga OS v4.0\n"
+        return (f"   ,~.      shiblanga@local\n  (o o)>    ---------------\n  ( V )     OS: Shiblanga OS v5.0\n"
                 f"  -\"-\"-     Shell: streamlit-sh\n            Uptime: {random.randint(1, 99)} mins\n"
                 f"            Eggs: {random.randint(0, 999)}\n            Mood: {random.choice(['جعان', 'مبرمج', 'متحمس'])}")
     if low == "shiblanga": return SHIB
@@ -213,7 +265,7 @@ def run_command(cmd, anim):
     if low == "joke": return "😂 " + random.choice(JOKES)
     if low == "date": return datetime.now().strftime("%A %d %B %Y — %H:%M:%S")
     if low == "history":
-        h = st.session_state.get("cmds", [])
+        h = ss.get("cmds", [])
         return "\n".join(f"{i}  {c}" for i, c in enumerate(h, 1)) or "(فاضي)"
     if low.startswith("sudo"):
         return random.choice(["sudo: انت مش في ملف الـ sudoers.. الحادثة هتتبلغ للفراخ 🐔",
@@ -284,44 +336,108 @@ def run_command(cmd, anim):
         return (f" {'_' * (len(m) + 2)}\n< {m} >\n {'-' * (len(m) + 2)}\n"
                 "        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\\n"
                 "                ||----w |\n                ||     ||")
-    if low == "greet": return "شبلنجة بترحب بيك! (Shiblanga welcomes you!)"
+    if low == "greet": return f"شبلنجة بترحب بيك يا {ss.get('player') or 'غريب'}! (Shiblanga welcomes you!)"
     sug = difflib.get_close_matches(low.split()[0], COMMANDS, 3, 0.5) or [c for c in COMMANDS if c.startswith(low[:2])][:3]
     hint = ("\nتقصد: " + " ، ".join(sug) + " ؟") if sug else "\nجرب -help"
     return f"{cmd}: command not found (الأوامر الخارجية متقفلة في نسخة الويب).{hint}"
 
 
 def boot(anim):
-    lines = ["[ OK ] Loading kernel: shiblanga-4.0", "[ OK ] Mounting /dev/rice", "[ OK ] Starting egg-daemon",
-             "[ OK ] Quarantining chickens 🐔", "[ OK ] Warming up spaceship 🚀", "Welcome to Shiblanga OS v4.0"]
+    lines = ["[ OK ] Loading kernel: shiblanga-5.0", "[ OK ] Mounting /dev/rice", "[ OK ] Starting egg-daemon",
+             "[ OK ] Quarantining chickens 🐔", "[ OK ] Warming up spaceship 🚀", "Welcome to Shiblanga OS v5.0"]
     for i in range(1, len(lines) + 1):
         anim.code("\n".join(lines[:i])); time.sleep(0.25)
 
 
 # ----------------------------------------------------------------------------
-# Leaderboard (JSON file next to app.py)
+# Leaderboard: best score per (player, difficulty), saved automatically
 # ----------------------------------------------------------------------------
 SC_FILE = Path(__file__).with_name("scores.json")
+_LOCK = threading.Lock()
 
 
 def load_scores():
     try:
-        return json.loads(SC_FILE.read_text(encoding="utf-8"))
+        d = json.loads(SC_FILE.read_text(encoding="utf-8"))
+        return d if isinstance(d, list) else []
     except Exception:
         return []
 
 
-def save_score(name, score, diff):
-    data = load_scores()
-    data.append({"name": name[:20], "score": int(score), "diff": diff, "date": datetime.now().strftime("%Y-%m-%d")})
-    data = sorted(data, key=lambda d: d["score"], reverse=True)[:50]
-    try:
-        SC_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        st.warning("مقدرتش أحفظ الملف (مفيش صلاحية كتابة).")
+def _write_scores(data):
+    tmp = SC_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(SC_FILE)
+
+
+def submit_score(name, score, wave, diff):
+    """Keeps only the player's best per difficulty. Returns (record, is_new_best, previous_best)."""
+    key = name.casefold()
+    now = datetime.now().strftime("%Y-%m-%d")
+    with _LOCK:
+        data = load_scores()
+        rec = next((r for r in data if r["name"].casefold() == key and r["diff"] == diff), None)
+        prev = rec["score"] if rec else 0
+        new_best = False
+        if rec is None:
+            rec = dict(name=name, diff=diff, score=score, wave=wave, games=1, date=now)
+            data.append(rec)
+            new_best = True
+        else:
+            rec["games"] = rec.get("games", 1) + 1
+            if score > rec["score"]:
+                rec.update(score=score, wave=wave, date=now)
+                new_best = True
+        try:
+            _write_scores(data)
+        except Exception:
+            st.warning("مقدرتش أحفظ الملف (مفيش صلاحية كتابة).")
+    return rec, new_best, prev
+
+
+def board(diff="All"):
+    best = {}
+    for r in load_scores():
+        if diff != "All" and r.get("diff") != diff:
+            continue
+        k = r["name"].casefold()
+        if k not in best or r["score"] > best[k]["score"]:
+            best[k] = r
+    return sorted(best.values(), key=lambda r: (-r["score"], r.get("date", "")))
+
+
+def player_stats(name):
+    k = (name or "").casefold()
+    recs = [r for r in load_scores() if r["name"].casefold() == k]
+    return recs
+
+
+def board_html(rows, me):
+    me_k = (me or "").casefold()
+    top, rest = rows[:3], rows[3:15]
+    pod = ""
+    for idx in (1, 0, 2):
+        if idx < len(top):
+            r = top[idx]
+            cls = ["gold", "silver", "bronze"][idx]
+            you = " you" if r["name"].casefold() == me_k else ""
+            pod += (f'<div class="pod {cls}{you}"><div class="medal">{["🥇", "🥈", "🥉"][idx]}</div>'
+                    f'<div class="pn">{html.escape(r["name"])}</div><div class="ps">{r["score"]:,}</div>'
+                    f'<div class="pm">{html.escape(r["diff"])} · Wave {r.get("wave", 0)}</div></div>')
+    out = f'<div class="podium">{pod}</div>'
+    if rest:
+        trs = ""
+        for i, r in enumerate(rest, 4):
+            you = ' class="you"' if r["name"].casefold() == me_k else ""
+            trs += (f'<tr{you}><td>{i}</td><td>{html.escape(r["name"])}</td><td class="sc">{r["score"]:,}</td>'
+                    f'<td>{html.escape(r["diff"])}</td><td>{r.get("wave", 0)}</td><td>{html.escape(str(r.get("date", "")))}</td></tr>')
+        out += ('<div class="glass"><table class="lb"><tr><th>#</th><th>Player</th><th>Score</th><th>Mode</th>'
+                f'<th>Wave</th><th>Date</th></tr>{trs}</table></div>')
+    return out
 
 
 # ----------------------------------------------------------------------------
-# Game (HTML5 canvas in an iframe)
+# Game component: HTML5 canvas that reports the score back to Python by itself
 # ----------------------------------------------------------------------------
 GAME = r"""
 <style>
@@ -338,7 +454,17 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:sans-
 <div id="err"></div><div id="toast"></div></div>
 <script>
 (function(){
-const DIFF=__DIFF__;
+// ---------- Streamlit component protocol ----------
+function send(type,data){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type:type},data||{}),'*')}
+let DIFF={key:'Normal',name:'NORMAL',lives:3,fire:1,spd:1,hp:1},NEXT=DIFF,NAME='Player',BEST=0,NONCE='',RUN='',playT=0,newBest=false;
+window.addEventListener('message',e=>{
+  const d=e.data;if(!d||d.type!=='streamlit:render')return;const a=d.args||{};
+  if(a.diff)NEXT=a.diff;
+  if(a.name!==undefined){if(a.name!==NAME)BEST=0;NAME=a.name}
+  BEST=Math.max(BEST,+a.best||0);NONCE=a.nonce||NONCE});
+send('streamlit:componentReady',{apiVersion:1});
+send('streamlit:setFrameHeight',{height:720});
+
 const cv=document.getElementById('c'),g=cv.getContext('2d'),wrap=document.getElementById('wrap');
 const errBox=document.getElementById('err'),toastBox=document.getElementById('toast');
 window.addEventListener('error',e=>{errBox.style.display='block';errBox.textContent='JS error: '+e.message+' (line '+e.lineno+')'});
@@ -359,19 +485,23 @@ function snd(f,d,t,v,sl){t=t||'square';v=v||.04;sl=sl||0;if(mute||!AC)return;
   if(sl)o.frequency.exponentialRampToValueAtTime(Math.max(30,f+sl),AC.currentTime+d);
   a.gain.value=v;a.gain.exponentialRampToValueAtTime(.0001,AC.currentTime+d);o.connect(a);a.connect(AC.destination);o.start();o.stop(AC.currentTime+d)}catch(e){}}
 function startMusic(){if(musicT||!AC)return;const n=[110,110,165,131,110,110,196,165],m=[440,523,659,523,440,392,440,523];let i=0;
-  musicT=setInterval(()=>{if(state==='play'){const k=boss?1.5:1;snd(n[i%8]*k,.2,'triangle',.035);if(i%2===0)snd(m[(i>>1)%8]*k,.1,'square',.008)}i++},boss?170:230)}
+  musicT=setInterval(()=>{if(state==='play'){const k=boss?1.5:1;snd(n[i%8]*k,.2,'triangle',.035);if(i%2===0)snd(m[(i>>1)%8]*k,.1,'square',.008)}i++},230)}
 const WSND=['square','square','sawtooth','sawtooth','triangle'];
 
 // ---------- state ----------
-let hi=0;try{hi=+localStorage.getItem('shib_hi')||0}catch(e){}
 let state='menu',score=0,wave=0,t=0,shake=0,flash=0,combo=0,comboT=0,banner=0,overAt=0,waveTimer=0;
 let bul=[],ch=[],eggs=[],items=[],parts=[],texts=[],boss=null,mx=0,my=0,mouseIn=false;const keys={};
 const S=()=>clamp(W/22,30,54);
 const T={n:{e:'🐔',hp:0,fire:1,dive:1},f:{e:'🐤',hp:0,fire:.5,dive:3},t:{e:'🦃',hp:2,fire:1.6,dive:.4}};
 
 function startGame(){
+  DIFF=NEXT;RUN=Date.now().toString(36)+R().toString(36).slice(2,10);playT=0;newBest=false;
   P={x:W/2,y:H-90,lives:DIFF.lives,shield:0,weapon:1,cool:0,inv:60,bombs:2,freeze:0,magnet:0,laser:0};tx=P.x;ty=P.y;
   bul=[];ch=[];eggs=[];items=[];parts=[];texts=[];boss=null;score=0;wave=0;combo=0;waveTimer=0;state='play';startMusic();nextWave()}
+function finish(){
+  state='over';overAt=performance.now();newBest=score>BEST;if(newBest)BEST=score;
+  // الاسكور بيتبعت تلقائي لبايثون: مفيش إدخال يدوي
+  send('streamlit:setComponentValue',{dataType:'json',value:{run:RUN,name:NAME,score:score,wave:wave,secs:Math.round(playT*10)/10,nonce:NONCE,diff:DIFF.key}})}
 function nextWave(){
   wave++;banner=120;eggs=[];waveTimer=0;
   if(wave%5===0){const m=Math.round((40+wave*12)*DIFF.hp);boss={x:W/2,y:-200,ty:S()*3,hp:m,max:m,dir:1,sh:0,ph:1};return}
@@ -390,7 +520,7 @@ function hurt(){
   if(P.inv>0)return;
   if(P.shield>0){P.shield--;P.inv=40;snd(200,.2,'sawtooth',.05);return}
   P.lives--;P.inv=110;shake=18;combo=0;burst(P.x,P.y,30,['#ff9800','#ffeb3b','#fff']);snd(120,.4,'sawtooth',.08,-60);
-  if(P.lives<=0){state='over';overAt=performance.now();if(score>hi){hi=score;try{localStorage.setItem('shib_hi',hi)}catch(e){}}}}
+  if(P.lives<=0)finish()}
 function drop(x,y,force){
   if(!force&&R()>.15)return;const r=R();
   items.push({x,y,ty:r<.22?'W':r<.37?'S':r<.46?'L':r<.58?'B':r<.7?'Z':r<.8?'M':r<.9?'X':'F'})}
@@ -411,7 +541,7 @@ function killBoss(){
 function egg(x,y,vx,vy){eggs.push({x,y,vx,vy})}
 
 function update(s){
-  t+=s;const sz=S();
+  t+=s;playT+=s/60;const sz=S();
   if(keys.ArrowLeft||keys.KeyA)tx-=11*s;if(keys.ArrowRight||keys.KeyD)tx+=11*s;
   if(keys.ArrowUp||keys.KeyW)ty-=9*s;if(keys.ArrowDown||keys.KeyS)ty+=9*s;
   if(mouseIn){tx=mx;ty=my}
@@ -493,8 +623,8 @@ function drawShip(){
   g.restore();g.globalAlpha=1}
 function big(a,b){
   g.fillStyle='rgba(0,0,0,.6)';g.fillRect(0,0,W,H);g.shadowColor='#ff9800';g.shadowBlur=25;g.fillStyle='#ffd93b';
-  g.font='900 '+clamp(W/14,28,80)+'px sans-serif';g.fillText(a,W/2,H*.38);g.shadowBlur=0;g.fillStyle='#fff';
-  g.font=clamp(W/45,14,22)+'px sans-serif';b.split('\n').forEach((l,i)=>g.fillText(l,W/2,H*.52+i*30))}
+  g.font='900 '+clamp(W/14,28,80)+'px sans-serif';g.fillText(a,W/2,H*.34);g.shadowBlur=0;g.fillStyle='#fff';
+  g.font=clamp(W/45,14,22)+'px sans-serif';b.split('\n').forEach((l,i)=>g.fillText(l,W/2,H*.47+i*30))}
 function draw(){
   const sz=S();g.save();if(shake>.5)g.translate((R()-.5)*shake,(R()-.5)*shake);
   g.textAlign='center';g.textBaseline='middle';
@@ -518,15 +648,16 @@ function draw(){
     g.moveTo(mx-22,my);g.lineTo(mx-8,my);g.moveTo(mx+8,my);g.lineTo(mx+22,my);g.moveTo(mx,my-22);g.lineTo(mx,my-8);g.moveTo(mx,my+8);g.lineTo(mx,my+22);g.stroke()}
   g.textAlign='left';g.fillStyle='#ffd93b';g.font='bold 18px monospace';
   if(state!=='menu'&&P){
-    g.fillText('SCORE '+score+'   HI '+hi+'   '+DIFF.name,14,24);
+    g.fillText('SCORE '+score+'   BEST '+BEST+'   '+DIFF.name,14,24);
     g.fillText('WAVE '+wave+'   WEAPON Lv'+P.weapon+'   💣 x'+P.bombs+(combo>4?'   COMBO x'+Math.min(1+(combo/5|0),5):''),14,48);
     g.fillText('❤'.repeat(Math.max(P.lives,0))+'  🛡'.repeat(P.shield),14,72);
-    let y=96;[['freeze','❄️'],['magnet','🧲'],['laser','🔱']].forEach(q=>{if(P[q[0]]>0){g.fillText(q[1]+' '+(P[q[0]]/60).toFixed(1)+'s',14,y);y+=24}})}
+    let y=96;[['freeze','❄️'],['magnet','🧲'],['laser','🔱']].forEach(q=>{if(P[q[0]]>0){g.fillText(q[1]+' '+(P[q[0]]/60).toFixed(1)+'s',14,y);y+=24}});
+    g.font='bold 15px sans-serif';g.fillStyle='#fff9';g.fillText('👤 '+NAME,14,H-16)}
   g.textAlign='center';
   if(banner>0&&state==='play'){g.globalAlpha=clamp(banner/40,0,1);g.fillStyle='#fff';g.font='bold '+W/18+'px sans-serif';g.fillText(wave%5===0?'⚠ BOSS ⚠':'WAVE '+wave,W/2,H/2);g.globalAlpha=1}
-  if(state==='menu')big('🐔 CHICKEN INVADERS 🐔','SHIBLANGA EDITION — '+DIFF.name+'\nClick / Space للبدء\nماوس أو أسهم للحركة | ضرب أوتوماتيك\nB قنبلة | P إيقاف | M صوت | F شاشة كاملة');
+  if(state==='menu')big('🐔 CHICKEN INVADERS 🐔','👤 '+NAME+'  —  '+NEXT.name+'\nClick / Space للبدء\nماوس أو أسهم للحركة | ضرب أوتوماتيك\nB قنبلة | P إيقاف | M صوت | F شاشة كاملة\n🏆 BEST: '+BEST);
   if(state==='pause')big('PAUSED','اضغط P أو كليك للمتابعة');
-  if(state==='over')big('GAME OVER','SCORE '+score+'  |  HI '+hi+'\nسجّل سكورك في الـ Leaderboard تحت 👇\nClick لإعادة اللعب')}
+  if(state==='over')big('GAME OVER',(newBest?'🏆 NEW PERSONAL BEST! 🏆\n':'')+'SCORE '+score+'  |  BEST '+BEST+'\n✅ السكور اتسجّل تلقائي في الـ Leaderboard\nClick لإعادة اللعب')}
 
 let last=performance.now(),errShown=false;
 function loop(n){
@@ -572,25 +703,59 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden&&state==='p
 })();
 </script>
 """
-DIFFS = {"Easy": dict(name="EASY", lives=5, fire=.6, spd=.85, hp=.8),
-         "Normal": dict(name="NORMAL", lives=3, fire=1, spd=1, hp=1),
-         "Hard": dict(name="HARD", lives=2, fire=1.5, spd=1.2, hp=1.3)}
+
+COMP_DIR = Path(__file__).with_name("shiblanga_game_component")
+COMP_DIR.mkdir(exist_ok=True)
+_page = ('<!DOCTYPE html><html><head><meta charset="utf-8">'
+         '<meta name="viewport" content="width=device-width,initial-scale=1"></head><body>' + GAME + "</body></html>")
+_idx = COMP_DIR / "index.html"
+if not _idx.exists() or _idx.read_text(encoding="utf-8") != _page:
+    _idx.write_text(_page, encoding="utf-8")
+game_component = components.declare_component("shiblanga_game", path=str(COMP_DIR))
+
+
+def clean_name(s):
+    return re.sub(r"[^\w\s\-.]", "", s or "", flags=re.UNICODE).strip()[:16]
+
+
+def validate_run(res):
+    """Basic sanity checks: nonce, difficulty, and a plausible score for the time played."""
+    try:
+        score, wave, secs = int(res["score"]), int(res["wave"]), float(res["secs"])
+    except Exception:
+        return False, "بيانات غير صالحة"
+    if res.get("diff") not in DIFFS:
+        return False, "صعوبة غير معروفة"
+    if res.get("nonce") != ss.nonce:
+        return False, "الجلسة منتهية، العب تاني"
+    if res.get("name") != ss.player:
+        return False, "الاسم مش مطابق"
+    if score < 0 or wave < 1 or secs < 3:
+        return False, "محاولة قصيرة جداً"
+    if score > secs * 450 + 300 or wave > secs / 2 + 2:
+        return False, "السكور مش منطقي بالنسبة لوقت اللعب"
+    return True, ""
+
 
 # ----------------------------------------------------------------------------
 # UI
 # ----------------------------------------------------------------------------
-st.markdown('<div class="title"><span class="chk">🐔</span> SHIBLANGA OS <span class="chk">🐔</span></div>',
+st.markdown('<div class="title"><span class="chk">🐔</span> SHIBLANGA OS <span class="chk">🐔</span></div>'
+            '<div class="subtitle">Terminal · Tayebat Lab · Chicken Invaders — كله في مكان واحد 🚀</div>',
             unsafe_allow_html=True)
 st.markdown(f'<div class="warn">{DISCLAIMER}</div>', unsafe_allow_html=True)
 
-ss = st.session_state
-ss.setdefault("hist", ["Welcome to Shiblanga OS v4.0 — اكتب -help"])
+ss.setdefault("hist", ["Welcome to Shiblanga OS v5.0 — اكتب -help"])
 ss.setdefault("cmds", [])
 ss.setdefault("score", 0)
 ss.setdefault("log", {"طيب": 0, "خبيث": 0})
 ss.setdefault("quiz", None)
 ss.setdefault("quiz_score", [0, 0])
 ss.setdefault("booted", False)
+ss.setdefault("nonce", secrets.token_hex(8))
+ss.setdefault("done_runs", set())
+ss.setdefault("last_result", None)
+ss.setdefault("lb_diff", "All")
 
 
 def _count_check():
@@ -599,8 +764,7 @@ def _count_check():
 
 
 def new_quiz():
-    k = random.choice([k for k in TAYEBAT if k.isascii() or True])
-    ss.quiz = k
+    ss.quiz = random.choice(list(TAYEBAT))
 
 
 def answer_quiz(ans):
@@ -612,14 +776,6 @@ def answer_quiz(ans):
         ss.quiz_msg = ("bad", f"🚫 غلط! {ss.quiz} → {TAYEBAT[ss.quiz]}")
     new_quiz()
 
-
-with st.sidebar:
-    st.metric("🍗 Chicken checks", ss.score)
-    st.metric("🧠 Quiz", f"{ss.quiz_score[0]}/{ss.quiz_score[1]}")
-    best = load_scores()[:1]
-    if best:
-        st.metric("🏆 أعلى سكور", best[0]["score"], best[0]["name"])
-    st.caption("الباروديا ترفيهية، والرسومات emoji بس.")
 
 t1, t2, t3, t4 = st.tabs(["💻 Terminal", "🍽️ Tayebat Lab", "📜 القواعد", "🎮 Chicken Invaders"])
 
@@ -665,10 +821,8 @@ with t2:
             st.markdown(f'<div class="bad">🚫 <b>{safe}</b> → خبيثة{note}<br>{random.choice(FUNNY)}</div>', unsafe_allow_html=True)
         else:
             st.info("مش في القائمة المختصرة.")
-        if r:
-            b1, b2 = st.columns(2)
-            if b1.button("➕ سجّلتها في وجباتي النهاردة"):
-                ss.log[r] += 1
+        if r and st.button("➕ سجّلتها في وجباتي النهاردة"):
+            ss.log[r] += 1
     c1, c2 = st.columns(2)
     c1.success("✅ " + "، ".join(sorted({k for k, v in TAYEBAT.items() if v == "طيب" and not k.isascii()})))
     c2.error("🚫 " + "، ".join(sorted({k for k, v in TAYEBAT.items() if v == "خبيث" and not k.isascii()})))
@@ -706,24 +860,88 @@ with t3:
 
 with t4:
     st.subheader("🚀 Chicken Invaders: Shiblanga Edition")
-    st.caption("اضغط جوه اللعبة الأول عشان الكيبورد يشتغل. 💣 B | إيقاف P | صوت M | Fullscreen F | "
-               "Power-ups: ❄️ تجميد · 🧲 مغناطيس · 🔱 ليزر | جرّب Konami Code 😉")
-    components.html(GAME.replace("__DIFF__", json.dumps(DIFFS[diff_name])), height=720)
 
-    st.markdown("### 🏆 Leaderboard")
-    with st.form("score_form", clear_on_submit=True):
-        s1, s2, s3 = st.columns([2, 1, 1])
-        pname = s1.text_input("اسمك")
-        pscore = s2.number_input("السكور", min_value=0, max_value=10_000_000, step=10)
-        s3.markdown("<br>", unsafe_allow_html=True)
-        if s3.form_submit_button("💾 سجّل") and pname.strip() and pscore > 0:
-            save_score(pname.strip(), pscore, diff_name)
-            st.success("اتسجّل! 🎉")
-    rows = load_scores()[:10]
-    if rows:
-        medals = ["🥇", "🥈", "🥉"] + [f"{i}." for i in range(4, 11)]
-        st.dataframe([{"#": medals[i], "الاسم": r["name"], "السكور": r["score"], "الصعوبة": r["diff"], "التاريخ": r["date"]}
-                      for i, r in enumerate(rows)], use_container_width=True, hide_index=True)
+    if not ss.player:
+        # ---- أول مرة: اسأل عن الاسم قبل اللعب ----
+        st.markdown('<div class="glass namecard"><h2>👋 أهلاً يا بطل!</h2>'
+                    '<div>قبل ما تبدأ، قولنا اسمك عشان نسجّل أحسن محاولة ليك في الـ Leaderboard تلقائياً 🏆</div></div>',
+                    unsafe_allow_html=True)
+        with st.form("name_form"):
+            nm = st.text_input("اسمك (٢ – ١٦ حرف)", max_chars=16, placeholder="مثلاً: Shiblanga")
+            go = st.form_submit_button("🚀 يلا نلعب", use_container_width=True)
+        if go:
+            nm = clean_name(nm)
+            if len(nm) < 2:
+                st.error("الاسم لازم يكون حرفين على الأقل (حروف وأرقام بس).")
+            else:
+                ss.player = nm
+                st.query_params["p"] = nm
+                st.rerun()
     else:
-        st.info("لسه مفيش سكورات. كن أول واحد! 🐔")
-    st.caption("الـ Leaderboard بيعتمد على الأمانة: اكتب السكور اللي ظهرلك في شاشة Game Over.")
+        st.caption("اضغط جوه اللعبة الأول عشان الكيبورد يشتغل. 💣 B | إيقاف P | صوت M | Fullscreen F | "
+                   "Power-ups: ❄️ تجميد · 🧲 مغناطيس · 🔱 ليزر | جرّب Konami Code 😉")
+        my_best = max([r["score"] for r in player_stats(ss.player) if r["diff"] == diff_name] or [0])
+        res = game_component(diff=DIFFS[diff_name], name=ss.player, best=my_best, nonce=ss.nonce,
+                             key="shib_game", default=None)
+
+        # ---- استقبال السكور تلقائياً من اللعبة ----
+        if isinstance(res, dict) and res.get("run") and res["run"] not in ss.done_runs:
+            ss.done_runs.add(res["run"])
+            ok, why = validate_run(res)
+            if ok:
+                rec, nb, prev = submit_score(ss.player, int(res["score"]), int(res["wave"]), res["diff"])
+                rank = next((i for i, r in enumerate(board(res["diff"]), 1) if r["name"].casefold() == ss.player.casefold()), None)
+                ss.last_result = dict(ok=True, score=int(res["score"]), wave=int(res["wave"]), nb=nb, prev=prev,
+                                      rank=rank, diff=res["diff"])
+                ss.nonce = secrets.token_hex(8)
+                st.rerun()
+            else:
+                ss.last_result = dict(ok=False, why=why)
+
+        lr = ss.last_result
+        if lr:
+            if lr["ok"]:
+                head = "🏆 <b>رقم قياسي جديد!</b>" if lr["nb"] else "✅ اتسجّلت المحاولة"
+                extra = (f" (كان {lr['prev']:,})" if lr["nb"] and lr["prev"] else "")
+                tail = "" if lr["nb"] else f"<br><small>أحسن سكور ليك لسه أعلى، المحاولة دي مغيّرتش الترتيب.</small>"
+                st.markdown(f'<div class="res {"nb" if lr["nb"] else ""}">{head} — سكور <b>{lr["score"]:,}</b>{extra} · '
+                            f'Wave {lr["wave"]} · {lr["diff"]} · ترتيبك الحالي: <b>#{lr["rank"]}</b>{tail}</div>',
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="bad">⚠️ المحاولة اتر��ضت: {html.escape(lr["why"])}</div>', unsafe_allow_html=True)
+
+    # ---- Leaderboard ----
+    st.markdown("### 🏆 Leaderboard")
+    ss.lb_diff = st.radio("المستوى", ["All", "Easy", "Normal", "Hard"], horizontal=True,
+                          index=["All", "Easy", "Normal", "Hard"].index(ss.lb_diff), label_visibility="collapsed")
+    rows = board(ss.lb_diff)
+    if rows:
+        st.markdown(board_html(rows, ss.player), unsafe_allow_html=True)
+    else:
+        st.info("لسه مفيش سكورات في المستوى ده. كن أول واحد! 🐔")
+
+    if ss.player:
+        recs = player_stats(ss.player)
+        if recs:
+            mine = [r for r in recs if ss.lb_diff in ("All", r["diff"])]
+            if mine:
+                best_rec = max(mine, key=lambda r: r["score"])
+                my_rank = next((i for i, r in enumerate(rows, 1) if r["name"].casefold() == ss.player.casefold()), "-")
+                st.markdown(f"#### 👤 إحصائيات {html.escape(ss.player)}")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("🏅 أحسن سكور", f"{best_rec['score']:,}")
+                m2.metric("📍 ترتيبك", f"#{my_rank}")
+                m3.metric("🌊 أعلى Wave", max(r.get("wave", 0) for r in mine))
+                m4.metric("🎮 محاولات", sum(r.get("games", 1) for r in mine))
+    st.caption("السكور بيتسجّل تلقائياً من اللعبة نفسها، ومفيش إدخال يدوي. بيتحفظ لكل لاعب أحسن محاولة بس في كل مستوى صعوبة.")
+
+# ----------------------------------------------------------------------------
+# Sidebar stats (بتتحدّث بعد معالجة السكور)
+# ----------------------------------------------------------------------------
+with side_slot:
+    st.metric("🍗 Chicken checks", ss.score)
+    st.metric("🧠 Quiz", f"{ss.quiz_score[0]}/{ss.quiz_score[1]}")
+    top = board("All")[:1]
+    if top:
+        st.metric("🏆 أعلى سكور", f"{top[0]['score']:,}", top[0]["name"])
+    st.caption("الباروديا ترفيهية، والرسومات emoji بس.")
